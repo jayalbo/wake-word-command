@@ -1,0 +1,26 @@
+{
+  "name": "wake-word-command",
+  "version": "1.0.0",
+  "description": "A library for detecting wake words and extracting commands from speech",
+  "main": "wake-word-detection.js",
+  "types": "wake-word-detection.d.ts",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "wake-word",
+    "speech-recognition",
+    "voice-command",
+    "voice-control"
+  ],
+  "author": "jayalbo",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jayalbo/wake-word-command.git"
+  },
+  "bugs": {
+    "url": "https://github.com/jayalbo/wake-word-command/issues"
+  },
+  "homepage": "https://github.com/jayalbo/wake-word-command#readme"
+}
