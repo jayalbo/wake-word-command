@@ -3,6 +3,19 @@
  */
 
 /**
+ * Log levels for controlling console output
+ * @enum {string}
+ */
+export const LogLevel = {
+  NONE: "none",
+  ERROR: "error",
+  WARN: "warn",
+  INFO: "info",
+  DEBUG: "debug",
+  ALL: "all",
+};
+
+/**
  * Create a new WakeWordDetection instance
  * @param {Object} options - Configuration options
  * @param {string} options.wakeWord - The wake word to detect (mandatory)
@@ -11,6 +24,7 @@
  * @param {Function} [options.onTranscription] - Callback with current transcription
  * @param {Function} [options.onCommand] - Callback with extracted command
  * @param {Function} [options.onError] - Callback when an error occurs
+ * @param {string} [options.logLevel="info"] - Log level for console output (none, error, warn, info, debug, all)
  * @returns {Object} WakeWordDetection instance
  * @throws {Error} If wakeWord is not provided
  */
@@ -28,6 +42,7 @@ export function createWakeWordDetection(options = {}) {
     onTranscription: options.onTranscription || (() => {}),
     onCommand: options.onCommand || (() => {}),
     onError: options.onError || (() => {}),
+    logLevel: options.logLevel || LogLevel.INFO,
   };
 
   // Internal state
@@ -53,6 +68,55 @@ export function createWakeWordDetection(options = {}) {
   const MAX_RESTART_ATTEMPTS = 5;
   const RESTART_DELAY_MS = 1000;
   let restartAttempts = 0;
+
+  /**
+   * Logger function that respects the configured log level
+   * @param {string} level - The log level (error, warn, info, debug)
+   * @param {string} message - The message to log
+   * @param {any} [data] - Optional data to log
+   */
+  function log(level, message, data) {
+    // Map log levels to console methods
+    const logMethods = {
+      error: console.error,
+      warn: console.warn,
+      info: console.info,
+      debug: console.debug,
+    };
+
+    // Check if we should log based on configured level
+    const shouldLog = shouldLogLevel(level, config.logLevel);
+
+    if (shouldLog && logMethods[level]) {
+      if (data !== undefined) {
+        logMethods[level](message, data);
+      } else {
+        logMethods[level](message);
+      }
+    }
+  }
+
+  /**
+   * Determine if a log level should be displayed based on the configured level
+   * @param {string} level - The log level to check
+   * @param {string} configuredLevel - The configured log level
+   * @returns {boolean} Whether the log should be displayed
+   */
+  function shouldLogLevel(level, configuredLevel) {
+    if (configuredLevel === LogLevel.NONE) return false;
+    if (configuredLevel === LogLevel.ALL) return true;
+
+    const levels = [
+      LogLevel.ERROR,
+      LogLevel.WARN,
+      LogLevel.INFO,
+      LogLevel.DEBUG,
+    ];
+    const configuredIndex = levels.indexOf(configuredLevel);
+    const levelIndex = levels.indexOf(level);
+
+    return levelIndex <= configuredIndex;
+  }
 
   /**
    * Initialize speech recognition
@@ -91,20 +155,21 @@ export function createWakeWordDetection(options = {}) {
         // Normalize the transcript
         const normalizedTranscript = transcript.trim().toLowerCase();
 
-        console.log(`Transcript: "${transcript}" (isFinal: ${isFinal})`);
+        log("debug", `Transcript: "${transcript}" (isFinal: ${isFinal})`);
 
         // Check if the transcript contains the wake word
         const containsWakeWord = normalizedTranscript.includes(
           config.wakeWord.toLowerCase()
         );
-        console.log(
+        log(
+          "debug",
           `Contains wake word "${config.wakeWord}": ${containsWakeWord}`
         );
 
         if (containsWakeWord && !isProcessingCommand) {
           // Only process if we're not already handling a command and enough time has passed
           if (now - lastWakeWordTime > WAKE_WORD_COOLDOWN_MS) {
-            console.log("New wake word detected!");
+            log("info", "New wake word detected!");
             lastWakeWordTime = now;
             isCommandComplete = false;
             wakeWordDetected = true;
@@ -123,7 +188,7 @@ export function createWakeWordDetection(options = {}) {
 
             // Extract the command (everything after the wake word)
             const commandText = extractCommandText(transcript);
-            console.log(`Extracted command: "${commandText}"`);
+            log("info", `Extracted command: "${commandText}"`);
 
             if (commandText && commandText.length >= MIN_COMMAND_LENGTH) {
               currentCommand = commandText;
@@ -134,7 +199,7 @@ export function createWakeWordDetection(options = {}) {
             // Set a timeout to finalize the command if no more speech is detected
             commandTimeout = setTimeout(() => {
               if (!isCommandComplete && wakeWordDetected) {
-                console.log("Command finalized by timeout!");
+                log("info", "Command finalized by timeout!");
                 finalizeCommand();
               }
             }, COMMAND_TIMEOUT_MS);
@@ -144,7 +209,7 @@ export function createWakeWordDetection(options = {}) {
           if (transcript.length > fullTranscript.length) {
             fullTranscript = transcript;
             const commandText = extractCommandText(fullTranscript);
-            console.log(`Updating command: "${commandText}"`);
+            log("debug", `Updating command: "${commandText}"`);
 
             if (
               commandText &&
@@ -164,7 +229,7 @@ export function createWakeWordDetection(options = {}) {
 
             commandTimeout = setTimeout(() => {
               if (!isCommandComplete && wakeWordDetected) {
-                console.log("Command finalized by timeout!");
+                log("info", "Command finalized by timeout!");
                 finalizeCommand();
               }
             }, COMMAND_TIMEOUT_MS);
@@ -173,20 +238,20 @@ export function createWakeWordDetection(options = {}) {
 
         // If this is a final result and we have a wake word detected, finalize the command
         if (isFinal && wakeWordDetected && !isCommandComplete) {
-          console.log("Command finalized by isFinal!");
+          log("info", "Command finalized by isFinal!");
           finalizeCommand();
         }
       };
 
       // Handle recognition errors
       recognition.onerror = (event) => {
-        console.error("Speech recognition error:", event.error);
+        log("error", "Speech recognition error:", event.error);
 
         // Ignore no-speech errors if they happen too frequently
         if (event.error === "no-speech") {
           const now = Date.now();
           if (now - lastErrorTime < ERROR_COOLDOWN_MS) {
-            console.log("Ignoring frequent no-speech error");
+            log("debug", "Ignoring frequent no-speech error");
             return;
           }
           lastErrorTime = now;
@@ -209,7 +274,7 @@ export function createWakeWordDetection(options = {}) {
 
       return true;
     } catch (error) {
-      console.error("Error initializing speech recognition:", error);
+      log("error", "Error initializing speech recognition:", error);
       config.onError(`Error initializing speech recognition: ${error.message}`);
       return false;
     }
@@ -224,13 +289,14 @@ export function createWakeWordDetection(options = {}) {
     }
 
     if (restartAttempts >= MAX_RESTART_ATTEMPTS) {
-      console.log("Max restart attempts reached, stopping recognition");
+      log("warn", "Max restart attempts reached, stopping recognition");
       stop();
       return;
     }
 
     const delay = RESTART_DELAY_MS * Math.pow(2, restartAttempts);
-    console.log(
+    log(
+      "info",
       `Restarting recognition in ${delay}ms (attempt ${
         restartAttempts + 1
       }/${MAX_RESTART_ATTEMPTS})`
@@ -246,7 +312,7 @@ export function createWakeWordDetection(options = {}) {
           restartAttempts++;
         }
       } catch (error) {
-        console.error("Error restarting recognition:", error);
+        log("error", "Error restarting recognition:", error);
         config.onError(`Error restarting recognition: ${error.message}`);
       }
     }, delay);
@@ -297,7 +363,7 @@ export function createWakeWordDetection(options = {}) {
 
     // Find the position of the wake word
     const wakeWordIndex = normalizedText.indexOf(normalizedWakeWord);
-    console.log(`Wake word index: ${wakeWordIndex}`);
+    log("debug", `Wake word index: ${wakeWordIndex}`);
 
     // If wake word found in current text, get everything after it
     if (wakeWordIndex !== -1) {
@@ -332,13 +398,13 @@ export function createWakeWordDetection(options = {}) {
       isCommandComplete = false;
       isPaused = false;
       wakeWordDetected = false;
-      console.log(`Starting with wake word: "${config.wakeWord}"`);
+      log("info", `Starting with wake word: "${config.wakeWord}"`);
 
       // Start recognition
       recognition.start();
       isListening = true;
     } catch (error) {
-      console.error("Error starting speech recognition:", error);
+      log("error", "Error starting speech recognition:", error);
       config.onError(`Error starting speech recognition: ${error.message}`);
     }
   }
@@ -380,7 +446,7 @@ export function createWakeWordDetection(options = {}) {
    */
   function setWakeWord(wakeWord) {
     config.wakeWord = wakeWord.toLowerCase().trim();
-    console.log(`Wake word set to: "${config.wakeWord}"`);
+    log("info", `Wake word set to: "${config.wakeWord}"`);
   }
 
   /**
@@ -391,6 +457,22 @@ export function createWakeWordDetection(options = {}) {
     config.language = language;
     if (recognition) {
       recognition.lang = language;
+    }
+  }
+
+  /**
+   * Set the log level
+   * @param {string} logLevel - The new log level (none, error, warn, info, debug, all)
+   */
+  function setLogLevel(logLevel) {
+    if (Object.values(LogLevel).includes(logLevel)) {
+      config.logLevel = logLevel;
+      log("info", `Log level set to: ${logLevel}`);
+    } else {
+      log(
+        "warn",
+        `Invalid log level: ${logLevel}. Using default: ${LogLevel.INFO}`
+      );
     }
   }
 
@@ -410,6 +492,7 @@ export function createWakeWordDetection(options = {}) {
     resume,
     setWakeWord,
     setLanguage,
+    setLogLevel,
     isSupported,
   };
 }

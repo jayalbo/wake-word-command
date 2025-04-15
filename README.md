@@ -1,6 +1,6 @@
 # Wake Word Command
 
-A lightweight JavaScript library for detecting wake words and extracting commands from speech in web applications.
+A JavaScript library for wake word detection and command extraction using the Web Speech API.
 
 ## Table of Contents
 
@@ -14,12 +14,12 @@ A lightweight JavaScript library for detecting wake words and extracting command
 
 ## Features
 
-- Wake word detection with customizable trigger words
-- Real-time speech-to-text transcription
-- Command extraction from speech
-- Automatic error recovery and restart
-- Cross-browser support
+- Wake word detection using the Web Speech API
+- Command extraction after wake word detection
+- Configurable language support
+- Event-based architecture with callbacks
 - TypeScript support
+- Configurable logging levels
 
 ## Installation
 
@@ -32,18 +32,15 @@ npm install wake-word-command
 ```javascript
 import { createWakeWordDetection } from "wake-word-command";
 
-// Create a new instance
-const wakeWord = createWakeWordDetection({
-  wakeWord: "hey assistant", // The wake word to detect
-  language: "en-US", // Optional: language code (default: 'en-US')
+const wakeWordDetection = createWakeWordDetection({
+  wakeWord: "hey computer",
+  language: "en-US",
+  logLevel: "info", // Optional: Set log level (none, error, warn, info, debug, all)
   onWakeWordDetected: () => {
     console.log("Wake word detected!");
   },
-  onTranscription: (text) => {
-    console.log("Current transcription:", text);
-  },
   onCommand: (command) => {
-    console.log("Command received:", command);
+    console.log("Command:", command);
   },
   onError: (error) => {
     console.error("Error:", error);
@@ -51,27 +48,19 @@ const wakeWord = createWakeWordDetection({
 });
 
 // Start listening
-wakeWord.start();
+wakeWordDetection.start();
 
 // Stop listening
-wakeWord.stop();
-
-// Pause listening
-wakeWord.pause();
-
-// Resume listening
-wakeWord.resume();
+wakeWordDetection.stop();
 
 // Change wake word
-wakeWord.setWakeWord("new wake word");
+wakeWordDetection.setWakeWord("hey assistant");
 
 // Change language
-wakeWord.setLanguage("es-ES");
+wakeWordDetection.setLanguage("es-ES");
 
-// Check if speech recognition is supported
-if (wakeWord.isSupported()) {
-  console.log("Speech recognition is supported");
-}
+// Change log level
+wakeWordDetection.setLogLevel("debug");
 ```
 
 ## Example: Voice-Controlled Todo List
@@ -169,6 +158,7 @@ Creates a new wake word detection instance.
 | options                    | `Object`   | Yes      | Configuration options               |
 | options.wakeWord           | `string`   | Yes      | The wake word to detect             |
 | options.language           | `string`   | No       | Language code (default: 'en-US')    |
+| options.logLevel           | `string`   | No       | The log level for console output    |
 | options.onWakeWordDetected | `Function` | No       | Callback when wake word is detected |
 | options.onTranscription    | `Function` | No       | Callback with current transcription |
 | options.onCommand          | `Function` | No       | Callback with extracted command     |
@@ -186,6 +176,7 @@ An object with the following methods:
 | `resume()`              | Resume listening for the wake word       |
 | `setWakeWord(wakeWord)` | Change the wake word                     |
 | `setLanguage(language)` | Change the language                      |
+| `setLogLevel(logLevel)` | Change the log level                     |
 | `isSupported()`         | Check if speech recognition is supported |
 
 #### Example
@@ -194,6 +185,7 @@ An object with the following methods:
 const wakeWord = createWakeWordDetection({
   wakeWord: "hey assistant",
   language: "en-US",
+  logLevel: "info",
   onWakeWordDetected: () => console.log("Wake word detected!"),
   onCommand: (command) => console.log("Command:", command),
 });
@@ -225,15 +217,17 @@ Called when an error occurs.
 
 ## Browser Support
 
-This library uses the Web Speech API, which is supported in:
+This library uses the Web Speech API, which is supported in modern browsers:
 
 - Chrome (desktop and mobile)
 - Edge
 - Safari (desktop and mobile)
-- Opera
-- Chrome for Android
-- Samsung Internet
+- Firefox (desktop and mobile)
 
 ## License
 
 MIT
+
+## Contributing
+
+Contributions are welcome! Please read our [Contributing Guidelines](CONTRIBUTING.md) for details on our code of conduct and the process for submitting pull requests.

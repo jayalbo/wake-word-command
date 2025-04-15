@@ -2,6 +2,21 @@
  * WakeWordDetection - A library for detecting wake words and extracting commands from speech
  */
 
+/**
+ * Log levels for controlling console output
+ */
+export enum LogLevel {
+  NONE = "none",
+  ERROR = "error",
+  WARN = "warn",
+  INFO = "info",
+  DEBUG = "debug",
+  ALL = "all",
+}
+
+/**
+ * Options for creating a WakeWordDetection instance
+ */
 export interface WakeWordDetectionOptions {
   /**
    * The wake word to detect (e.g., "hey agora")
@@ -36,8 +51,17 @@ export interface WakeWordDetectionOptions {
    * Callback function that is called when an error occurs
    */
   onError?: (error: string) => void;
+
+  /**
+   * Log level for console output
+   * @default "info"
+   */
+  logLevel?: LogLevel | string;
 }
 
+/**
+ * WakeWordDetection instance
+ */
 export interface WakeWordDetection {
   /**
    * Start listening for the wake word
@@ -68,6 +92,11 @@ export interface WakeWordDetection {
    * Set a new language
    */
   setLanguage: (language: string) => void;
+
+  /**
+   * Set the log level
+   */
+  setLogLevel: (logLevel: LogLevel | string) => void;
 
   /**
    * Check if the browser supports speech recognition
