@@ -53,6 +53,11 @@ export interface WakeWordDetectionOptions {
   onError?: (error: string) => void;
 
   /**
+   * Callback function that is called when the command timeout occurs
+   */
+  onCommandTimeout?: () => void;
+
+  /**
    * Log level for console output
    * @default "info"
    */
