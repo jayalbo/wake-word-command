@@ -153,16 +153,18 @@ Creates a new wake word detection instance.
 
 #### Parameters
 
-| Parameter                  | Type       | Required | Description                         |
-| -------------------------- | ---------- | -------- | ----------------------------------- |
-| options                    | `Object`   | Yes      | Configuration options               |
-| options.wakeWord           | `string`   | Yes      | The wake word to detect             |
-| options.language           | `string`   | No       | Language code (default: 'en-US')    |
-| options.logLevel           | `string`   | No       | The log level for console output    |
-| options.onWakeWordDetected | `Function` | No       | Callback when wake word is detected |
-| options.onTranscription    | `Function` | No       | Callback with current transcription |
-| options.onCommand          | `Function` | No       | Callback with extracted command     |
-| options.onError            | `Function` | No       | Callback when an error occurs       |
+| Parameter                  | Type       | Required | Description                                            |
+| -------------------------- | ---------- | -------- | ------------------------------------------------------ |
+| options                    | `Object`   | Yes      | Configuration options                                  |
+| options.wakeWord           | `string`   | Yes      | The wake word to detect                                |
+| options.language           | `string`   | No       | Language code (default: 'en-US')                       |
+| options.logLevel           | `string`   | No       | The log level for console output                       |
+| options.onWakeWordDetected | `Function` | No       | Callback when wake word is detected                    |
+| options.onTranscription    | `Function` | No       | Callback with current transcription                    |
+| options.onCommand          | `Function` | No       | Callback with extracted command                        |
+| options.onCommandTimeout   | `Function` | No       | Callback when command timeout occurs                   |
+| options.onError            | `Function` | No       | Callback when an error occurs                          |
+| options.commandTimeoutMs   | `number`   | No       | Timeout duration in milliseconds for command detection |
 
 #### Returns
 
@@ -209,6 +211,10 @@ Called when a complete command is detected.
 
 - `command` (string): The extracted command (text after the wake word)
 
+#### `onCommandTimeout()`
+
+Called when no command is detected within the timeout period (default: 3 seconds) after the wake word is detected. This indicates that the system is returning to listening for the wake word.
+
 #### `onError(error)`
 
 Called when an error occurs.
@@ -222,7 +228,8 @@ This library uses the Web Speech API, which is supported in modern browsers:
 - Chrome (desktop and mobile)
 - Edge
 - Safari (desktop and mobile)
-- Firefox (desktop and mobile)
+
+Note: Firefox does not currently support the Web Speech API's speech recognition feature.
 
 ## License
 

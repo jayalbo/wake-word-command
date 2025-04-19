@@ -24,6 +24,7 @@ export const LogLevel = {
  * @param {Function} [options.onTranscription] - Callback with current transcription
  * @param {Function} [options.onCommand] - Callback with extracted command
  * @param {Function} [options.onError] - Callback when an error occurs
+ * @param {Function} [options.onCommandTimeout] - Callback when command timeout occurs
  * @param {string} [options.logLevel="info"] - Log level for console output (none, error, warn, info, debug, all)
  * @returns {Object} WakeWordDetection instance
  * @throws {Error} If wakeWord is not provided
@@ -42,7 +43,9 @@ export function createWakeWordDetection(options = {}) {
     onTranscription: options.onTranscription || (() => {}),
     onCommand: options.onCommand || (() => {}),
     onError: options.onError || (() => {}),
+    onCommandTimeout: options.onCommandTimeout || (() => {}),
     logLevel: options.logLevel || LogLevel.INFO,
+    commandTimeoutMs: options.commandTimeoutMs || 3000,
   };
 
   // Internal state
@@ -54,19 +57,27 @@ export function createWakeWordDetection(options = {}) {
   let isCommandComplete = false;
   let wakeWordDetected = false;
   let commandTimeout = null;
-  let lastTranscriptTime = 0;
   let fullTranscript = "";
   let lastErrorTime = 0;
-  let lastProcessedCommand = "";
   let isProcessingCommand = false;
   let interimTranscript = "";
   let restartTimeout = null;
-  const COMMAND_TIMEOUT_MS = 2000;
+  let isStopping = false; // Track if we're in the process of stopping
+  let pendingRestart = false; // Track if we need to restart after stopping
+  let inactivityTimeout = null; // Track inactivity timeout
+  let commandBuffer = ""; // Buffer for quick commands
+  let commandStartTime = 0; // Track when command listening started
+  let commandMode = false; // Explicitly track if we're in command mode
+  let lastTranscript = ""; // Store the last transcript for comparison
+  let countdownInterval = null; // Track the countdown interval
+  let waitingForNextFinal = false; // Track if we're waiting for the next isFinal event
   const WAKE_WORD_COOLDOWN_MS = 2000;
   const ERROR_COOLDOWN_MS = 1000;
-  const MIN_COMMAND_LENGTH = 5;
+  const MIN_COMMAND_LENGTH = 1; // Allow single-word commands like "Hi" or "Hello"
   const MAX_RESTART_ATTEMPTS = 5;
   const RESTART_DELAY_MS = 1000;
+  const INACTIVITY_TIMEOUT_MS = 30000; // 30 seconds of inactivity before auto-restart
+  const QUICK_COMMAND_BUFFER_MS = 1000; // Buffer time for quick commands
   let restartAttempts = 0;
 
   /**
@@ -146,6 +157,9 @@ export function createWakeWordDetection(options = {}) {
         // Reset restart attempts on successful result
         restartAttempts = 0;
 
+        // Reset inactivity timeout
+        resetInactivityTimeout();
+
         const results = Array.from(event.results);
         const lastResult = results[results.length - 1];
         const transcript = lastResult[0].transcript;
@@ -154,19 +168,24 @@ export function createWakeWordDetection(options = {}) {
 
         // Normalize the transcript
         const normalizedTranscript = transcript.trim().toLowerCase();
+        const normalizedWakeWord = config.wakeWord.toLowerCase();
 
         log("debug", `Transcript: "${transcript}" (isFinal: ${isFinal})`);
 
         // Check if the transcript contains the wake word
-        const containsWakeWord = normalizedTranscript.includes(
-          config.wakeWord.toLowerCase()
-        );
+        const containsWakeWord =
+          normalizedTranscript.includes(normalizedWakeWord);
+
+        // Trigger wake word detected callback
+        if (containsWakeWord) config.onWakeWordDetected();
+
         log(
           "debug",
           `Contains wake word "${config.wakeWord}": ${containsWakeWord}`
         );
 
-        if (containsWakeWord && !isProcessingCommand) {
+        // CASE 1: Wake word detected in a final result
+        if (containsWakeWord && isFinal && !isProcessingCommand) {
           // Only process if we're not already handling a command and enough time has passed
           if (now - lastWakeWordTime > WAKE_WORD_COOLDOWN_MS) {
             log("info", "New wake word detected!");
@@ -174,72 +193,79 @@ export function createWakeWordDetection(options = {}) {
             isCommandComplete = false;
             wakeWordDetected = true;
             isProcessingCommand = true;
-            fullTranscript = transcript;
-            interimTranscript = "";
+            commandMode = true;
 
-            // Clear any existing command timeout
-            if (commandTimeout) {
-              clearTimeout(commandTimeout);
-              commandTimeout = null;
-            }
+            // // Call the wake word detected callback
+            // config.onWakeWordDetected();
 
-            // Call the wake word detected callback
-            config.onWakeWordDetected();
+            // Check if the transcript is ONLY the wake word
+            const isOnlyWakeWord =
+              normalizedTranscript.trim() === normalizedWakeWord;
 
-            // Extract the command (everything after the wake word)
-            const commandText = extractCommandText(transcript);
-            log("info", `Extracted command: "${commandText}"`);
+            if (isOnlyWakeWord) {
+              // If it's only the wake word, wait for the next isFinal event
+              log(
+                "info",
+                "Wake word only detected, waiting for next command..."
+              );
+              waitingForNextFinal = true;
+              startCommandListening();
+            } else {
+              // If it contains more than just the wake word, extract the command
+              const commandText = extractCommandText(transcript);
+              log("info", `Extracted command: "${commandText}"`);
 
-            if (commandText && commandText.length >= MIN_COMMAND_LENGTH) {
-              currentCommand = commandText;
-              interimTranscript = commandText;
-              config.onTranscription(commandText);
-            }
+              if (commandText && commandText.length >= MIN_COMMAND_LENGTH) {
+                currentCommand = commandText;
+                interimTranscript = commandText;
+                config.onTranscription(commandText);
 
-            // Set a timeout to finalize the command if no more speech is detected
-            commandTimeout = setTimeout(() => {
-              if (!isCommandComplete && wakeWordDetected) {
-                log("info", "Command finalized by timeout!");
-                finalizeCommand();
+                // Process the command directly
+                processCommand(commandText);
+              } else {
+                // No valid command, go back to listening for wake word
+                log("info", "No valid command detected after wake word");
+                resetToWakeWordListening();
               }
-            }, COMMAND_TIMEOUT_MS);
-          }
-        } else if (wakeWordDetected && !isCommandComplete) {
-          // Update the full transcript if it's a continuation of the current command
-          if (transcript.length > fullTranscript.length) {
-            fullTranscript = transcript;
-            const commandText = extractCommandText(fullTranscript);
-            log("debug", `Updating command: "${commandText}"`);
-
-            if (
-              commandText &&
-              commandText.length >= MIN_COMMAND_LENGTH &&
-              commandText !== interimTranscript
-            ) {
-              currentCommand = commandText;
-              interimTranscript = commandText;
-              lastTranscriptTime = now;
-              config.onTranscription(commandText);
             }
-
-            // Reset the timeout
-            if (commandTimeout) {
-              clearTimeout(commandTimeout);
-            }
-
-            commandTimeout = setTimeout(() => {
-              if (!isCommandComplete && wakeWordDetected) {
-                log("info", "Command finalized by timeout!");
-                finalizeCommand();
-              }
-            }, COMMAND_TIMEOUT_MS);
           }
         }
+        // CASE 2: We're waiting for the next isFinal event after wake word
+        else if (waitingForNextFinal && isFinal) {
+          log("debug", "Received next isFinal event after wake word");
 
-        // If this is a final result and we have a wake word detected, finalize the command
-        if (isFinal && wakeWordDetected && !isCommandComplete) {
-          log("info", "Command finalized by isFinal!");
-          finalizeCommand();
+          // Store the transcript
+          fullTranscript = transcript;
+          lastTranscript = transcript;
+
+          // Use this transcript as the command
+          const commandText = transcript.trim();
+
+          if (commandText && commandText.length >= MIN_COMMAND_LENGTH) {
+            log("info", `Command detected: "${commandText}"`);
+            currentCommand = commandText;
+            interimTranscript = commandText;
+            config.onTranscription(commandText);
+
+            // Process the command directly instead of calling finalizeCommand
+            processCommand(commandText);
+          } else {
+            // No valid command, go back to listening for wake word
+            log("info", "No valid command detected after wake word");
+            resetToWakeWordListening();
+          }
+        }
+        // CASE 3: We're in command mode and received a new transcript (not final)
+        else if (wakeWordDetected && !isCommandComplete && !isFinal) {
+          // Update the interim transcript for display
+          interimTranscript = transcript;
+          config.onTranscription(transcript);
+
+          // If we're waiting for a command and the user starts talking, pause the timeout
+          if (waitingForNextFinal) {
+            log("debug", "User started talking, pausing command timeout");
+            pauseCommandTimeout();
+          }
         }
       };
 
@@ -247,7 +273,7 @@ export function createWakeWordDetection(options = {}) {
       recognition.onerror = (event) => {
         log("error", "Speech recognition error:", event.error);
 
-        // Ignore no-speech errors if they happen too frequently
+        // Handle no-speech errors differently
         if (event.error === "no-speech") {
           const now = Date.now();
           if (now - lastErrorTime < ERROR_COOLDOWN_MS) {
@@ -255,20 +281,40 @@ export function createWakeWordDetection(options = {}) {
             return;
           }
           lastErrorTime = now;
+
+          // For no-speech errors, we'll let the onend handler restart it
+          // This is more reliable than treating it as a critical error
+          log("info", "No speech detected, will restart on end");
+          return;
         }
 
         config.onError(`Error: ${event.error}`);
 
         // Handle specific errors that require restart
-        if (["no-speech", "audio-capture", "network"].includes(event.error)) {
+        if (["audio-capture", "network"].includes(event.error)) {
+          log("info", "Restarting recognition:", event.info);
           restartRecognition();
         }
       };
 
       // Handle recognition end
       recognition.onend = () => {
-        if (isListening && !isPaused) {
-          restartRecognition();
+        log("debug", "Recognition ended");
+
+        // If we have a pending restart, start again
+        if (pendingRestart) {
+          log("debug", "Executing pending restart");
+          pendingRestart = false;
+          start();
+        } else if (isListening && !isPaused) {
+          // For normal operation, restart after a short delay
+          // This handles both errors and normal end events
+          setTimeout(() => {
+            if (isListening && !isPaused) {
+              log("info", "Restarting recognition after end");
+              start();
+            }
+          }, 100);
         }
       };
 
@@ -278,6 +324,30 @@ export function createWakeWordDetection(options = {}) {
       config.onError(`Error initializing speech recognition: ${error.message}`);
       return false;
     }
+  }
+
+  /**
+   * Reset the inactivity timeout
+   */
+  function resetInactivityTimeout() {
+    // Clear any existing timeout
+    if (inactivityTimeout) {
+      clearTimeout(inactivityTimeout);
+      inactivityTimeout = null;
+    }
+
+    // Set a new timeout
+    inactivityTimeout = setTimeout(() => {
+      if (isListening && !isPaused) {
+        log("info", "No activity detected, restarting recognition");
+        stop();
+        setTimeout(() => {
+          if (isListening && !isPaused) {
+            start();
+          }
+        }, 100);
+      }
+    }, INACTIVITY_TIMEOUT_MS);
   }
 
   /**
@@ -319,29 +389,206 @@ export function createWakeWordDetection(options = {}) {
   }
 
   /**
+   * Reset to wake word listening mode
+   */
+  function resetToWakeWordListening() {
+    log("debug", "Resetting to wake word listening mode");
+    isCommandComplete = true;
+    wakeWordDetected = false;
+    isProcessingCommand = false;
+    commandMode = false;
+    waitingForNextFinal = false;
+
+    // Stop command listening
+    stopCommandListening();
+
+    // Reset state
+    currentCommand = "";
+    fullTranscript = "";
+    interimTranscript = "";
+
+    // Notify that we're returning to wake word listening
+    config.onCommandTimeout();
+  }
+
+  /**
+   * Start listening for a command after wake word detection
+   */
+  function startCommandListening() {
+    log("debug", "Starting command listening");
+
+    // Clear any existing command timeout
+    if (commandTimeout) {
+      clearTimeout(commandTimeout);
+      commandTimeout = null;
+    }
+
+    // Clear any existing countdown interval
+    if (countdownInterval) {
+      clearInterval(countdownInterval);
+      countdownInterval = null;
+    }
+
+    // Set the command start time
+    commandStartTime = Date.now();
+    log(
+      "debug",
+      `Command listening started at ${commandStartTime}, will timeout after ${config.commandTimeoutMs}ms`
+    );
+
+    // Start a countdown timer that updates every second
+    let remainingTime = config.commandTimeoutMs;
+    countdownInterval = setInterval(() => {
+      remainingTime -= 1000;
+      const secondsLeft = Math.ceil(remainingTime / 1000);
+      log("info", `Waiting for command... ${secondsLeft}s remaining`);
+
+      if (remainingTime <= 0) {
+        clearInterval(countdownInterval);
+        countdownInterval = null;
+      }
+    }, 1000);
+
+    // Set a single timeout for the full duration
+    commandTimeout = setTimeout(() => {
+      log(
+        "debug",
+        `Command timeout triggered after ${config.commandTimeoutMs}ms`
+      );
+
+      // Clear the countdown interval
+      if (countdownInterval) {
+        clearInterval(countdownInterval);
+        countdownInterval = null;
+      }
+
+      if (!isCommandComplete && wakeWordDetected) {
+        log("info", "Command finalized by timeout!");
+        resetToWakeWordListening();
+      }
+    }, config.commandTimeoutMs);
+  }
+
+  /**
+   * Pause the command timeout when the user starts talking
+   */
+  function pauseCommandTimeout() {
+    log("debug", "Pausing command timeout");
+
+    // Clear the existing timeout
+    if (commandTimeout) {
+      clearTimeout(commandTimeout);
+      commandTimeout = null;
+    }
+
+    // Clear the countdown interval
+    if (countdownInterval) {
+      clearInterval(countdownInterval);
+      countdownInterval = null;
+    }
+
+    // We'll restart the timeout when we get the next isFinal event
+    // or when we detect silence again
+  }
+
+  /**
+   * Stop listening for a command
+   */
+  function stopCommandListening() {
+    log("debug", "Stopping command listening");
+
+    // Clear the command timeout
+    if (commandTimeout) {
+      clearTimeout(commandTimeout);
+      commandTimeout = null;
+    }
+
+    // Clear the countdown interval
+    if (countdownInterval) {
+      clearInterval(countdownInterval);
+      countdownInterval = null;
+    }
+  }
+
+  /**
+   * Process a command
+   * @param {string} commandText - The command text to process
+   */
+  function processCommand(commandText) {
+    if (!isCommandComplete && wakeWordDetected) {
+      log("debug", "Processing command...");
+      isCommandComplete = true;
+      wakeWordDetected = false;
+      isProcessingCommand = false;
+      commandMode = false; // Exit command mode
+      waitingForNextFinal = false; // Reset waiting for command flag
+
+      // Stop command listening
+      stopCommandListening();
+
+      log("debug", `Command text: "${commandText}"`);
+
+      // Only process if this is a valid command (not empty and meets minimum length)
+      if (commandText && commandText.length >= MIN_COMMAND_LENGTH) {
+        log("debug", "Calling onCommand callback");
+        config.onCommand(commandText);
+      } else {
+        // If no valid command was detected, notify that we're returning to wake word listening
+        log("info", `Last transcript: "${lastTranscript}"`);
+        log("info", `Full transcript: "${fullTranscript}"`);
+        log("info", `commandText: "${commandText}"`);
+        log(
+          "info",
+          "No valid command detected, returning to wake word listening ❌"
+        );
+        log("debug", "Calling onCommandTimeout callback");
+        config.onCommandTimeout();
+      }
+
+      // Reset state
+      currentCommand = "";
+      fullTranscript = "";
+      interimTranscript = "";
+    }
+  }
+
+  /**
    * Finalize the current command
    */
   function finalizeCommand() {
     if (!isCommandComplete && wakeWordDetected) {
+      log("debug", "Finalizing command...");
       isCommandComplete = true;
       wakeWordDetected = false;
       isProcessingCommand = false;
+      commandMode = false; // Exit command mode
+      waitingForNextFinal = false; // Reset waiting for command flag
 
-      if (commandTimeout) {
-        clearTimeout(commandTimeout);
-        commandTimeout = null;
+      // Stop command listening
+      stopCommandListening();
+
+      // Get the command text - either from the current command or extract it
+      let finalCommand = currentCommand;
+      if (!finalCommand || finalCommand.length < MIN_COMMAND_LENGTH) {
+        finalCommand = extractCommandText(fullTranscript);
       }
 
-      const finalCommand = extractCommandText(fullTranscript);
+      log("debug", `Final command text: "${finalCommand}"`);
 
-      // Only process if this is a new command, it's not empty, and meets minimum length
-      if (
-        finalCommand &&
-        finalCommand !== lastProcessedCommand &&
-        finalCommand.length >= MIN_COMMAND_LENGTH
-      ) {
-        lastProcessedCommand = finalCommand;
+      // Only process if this is a valid command (not empty and meets minimum length)
+      if (finalCommand && finalCommand.length >= MIN_COMMAND_LENGTH) {
+        log("debug", "Calling onCommand callback");
         config.onCommand(finalCommand);
+      } else {
+        // If no valid command was detected, notify that we're returning to wake word listening
+        log("info", `Last transcript: "${lastTranscript}"`);
+        log("info", `Full transcript: "${fullTranscript}"`);
+        log(
+          "info",
+          "No valid command detected, returning to wake word listening ❌"
+        );
+        log("debug", "Calling onCommandTimeout callback");
+        config.onCommandTimeout();
       }
 
       // Reset state
@@ -367,14 +614,36 @@ export function createWakeWordDetection(options = {}) {
 
     // If wake word found in current text, get everything after it
     if (wakeWordIndex !== -1) {
-      return normalizedText
+      const command = normalizedText
         .substring(wakeWordIndex + normalizedWakeWord.length)
         .trim();
+      log("debug", `Extracted command after wake word: "${command}"`);
+      return command;
     }
 
     // If no wake word found but we're in a command, return the current command
     if (wakeWordDetected && currentCommand) {
+      log("debug", `Using current command: "${currentCommand}"`);
       return currentCommand;
+    }
+
+    // Check if we have a buffered command that might be a quick command
+    if (commandBuffer && !wakeWordDetected) {
+      const now = Date.now();
+      if (now - lastWakeWordTime < QUICK_COMMAND_BUFFER_MS) {
+        log("debug", `Using buffered command: "${commandBuffer}"`);
+        return commandBuffer;
+      }
+    }
+
+    // If we're in command mode but no wake word in this transcript,
+    // assume the entire transcript is the command
+    if (commandMode && !isCommandComplete) {
+      log(
+        "debug",
+        `No wake word in transcript, assuming entire transcript is command: "${normalizedText}"`
+      );
+      return normalizedText;
     }
 
     // Otherwise return empty string
@@ -386,6 +655,13 @@ export function createWakeWordDetection(options = {}) {
    */
   function start() {
     try {
+      // Don't start if we're in the process of stopping
+      if (isStopping) {
+        log("debug", "Cannot start while stopping, will retry");
+        setTimeout(() => start(), 50);
+        return;
+      }
+
       // Initialize recognition if not already initialized
       if (!recognition) {
         if (!initializeSpeechRecognition()) {
@@ -403,6 +679,9 @@ export function createWakeWordDetection(options = {}) {
       // Start recognition
       recognition.start();
       isListening = true;
+
+      // Set inactivity timeout
+      resetInactivityTimeout();
     } catch (error) {
       log("error", "Error starting speech recognition:", error);
       config.onError(`Error starting speech recognition: ${error.message}`);
@@ -414,9 +693,21 @@ export function createWakeWordDetection(options = {}) {
    */
   function stop() {
     if (recognition) {
+      isStopping = true;
       recognition.stop();
       isListening = false;
       isPaused = false;
+
+      // Clear inactivity timeout
+      if (inactivityTimeout) {
+        clearTimeout(inactivityTimeout);
+        inactivityTimeout = null;
+      }
+
+      // Set a flag to indicate we're no longer stopping after a short delay
+      setTimeout(() => {
+        isStopping = false;
+      }, 50);
     }
   }
 
@@ -445,7 +736,28 @@ export function createWakeWordDetection(options = {}) {
    * @param {string} wakeWord - The new wake word
    */
   function setWakeWord(wakeWord) {
+    // Clear all command-related state
+    currentCommand = "";
+    isCommandComplete = false;
+    wakeWordDetected = false;
+    isProcessingCommand = false;
+    fullTranscript = "";
+    interimTranscript = "";
+    commandBuffer = ""; // Clear command buffer
+
+    // Clear any existing timeouts
+    if (commandTimeout) {
+      clearTimeout(commandTimeout);
+      commandTimeout = null;
+    }
+
+    // Update the wake word
     config.wakeWord = wakeWord.toLowerCase().trim();
+
+    // Set pending restart flag and stop
+    pendingRestart = true;
+    stop();
+
     log("info", `Wake word set to: "${config.wakeWord}"`);
   }
 
@@ -457,7 +769,11 @@ export function createWakeWordDetection(options = {}) {
     config.language = language;
     if (recognition) {
       recognition.lang = language;
+      // Set pending restart flag and stop
+      pendingRestart = true;
+      stop();
     }
+    log("info", `Language set to: "${language}"`);
   }
 
   /**
